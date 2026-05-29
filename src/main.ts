@@ -86,6 +86,7 @@ type Anim = {
   pivot?: THREE.Vector3;
   baseQuat?: THREE.Quaternion;
   baseRel?: THREE.Vector3;
+  drop?: number; // 転がしで下る高さ（段差ぶん）
   // dieSlide
   from?: { x: number; z: number };
   fromY?: number;
@@ -532,12 +533,12 @@ window.addEventListener("keydown", (e) => {
     if (hn === 0) {
       startPlayerMove(nx, nz, 0); // 床を歩く
     } else {
-      // 前方スタックの最上段を押す（押し出し先が2段未満なら積む）
+      // 前方スタックの最上段を押す（押し出し先が空マスのときだけ＝積まない）
       const die = topDie(nx, nz)!;
       if (die.sinking) return;
       const nx2 = nx + dir.dx;
       const nz2 = nz + dir.dz;
-      if (inBounds(nx2, nz2) && height(nx2, nz2) < MAX_STACK) {
+      if (inBounds(nx2, nz2) && height(nx2, nz2) === 0) {
         startDieSlide(die, dir, nx2, nz2);
       }
       // それ以外は登れず停止（段差はジャンプで越える）
@@ -548,10 +549,11 @@ window.addEventListener("keydown", (e) => {
     if (die.sinking) return; // 沈み中は転がせない
     if (hn === h) {
       startPlayerMove(nx, nz, hn); // 同じ高さの隣へ乗り移る
-    } else if (hn === h - 1) {
-      startDieRoll(die, dir, nx, nz, true); // 最上段を転がして隣に積む（土台は残る）
+    } else if (hn < h) {
+      // 低い隣 → 最上段を転がす。空マスなら降りる、1段なら2段目に積む（土台は残る）
+      startDieRoll(die, dir, nx, nz, true);
     }
-    // hn >= h（登り）や 2段以上の段差は停止（ジャンプで越える）
+    // hn > h（登り）は停止（ジャンプで越える）
   }
 });
 
@@ -559,6 +561,7 @@ window.addEventListener("keydown", (e) => {
 function startDieRoll(die: Die, dir: Dir, nx: number, nz: number, carry: boolean) {
   const from = gridToWorld(die.gx, die.gz);
   const level = dieLevel(die); // 転がす前の段（最上段）
+  const landLevel = height(nx, nz); // 転がし先で乗る段
   const axisY = level * CELL; // 回転軸＝土台の上面の高さ
   const baseY = dieWorldY(level); // 現在の中心 y
   const pivot = new THREE.Vector3(from.x + dir.dx * HALF, axisY, from.z + dir.dz * HALF);
@@ -568,6 +571,7 @@ function startDieRoll(die: Die, dir: Dir, nx: number, nz: number, carry: boolean
     pivot,
     baseQuat: die.mesh.quaternion.clone(),
     baseRel: new THREE.Vector3(from.x, baseY, from.z).sub(pivot),
+    drop: (level - landLevel) * CELL, // 段差ぶん転がりながら下る
     t: 0,
     ms: CONFIG.rollMs,
   };
@@ -704,13 +708,20 @@ function finishAnim() {
     let gx = a.hx!;
     let gz = a.hz!;
     if (jd) {
-      if (height(gx, gz) < MAX_STACK) {
-        pushDie(gx, gz, jd); // 隣スタックの上に積む
-      } else {
-        gx = a.baseGX!;
+      if (height(gx, gz) >= MAX_STACK) {
+        gx = a.baseGX!; // 積めない → 元へ戻す
         gz = a.baseGZ!;
-        pushDie(gx, gz, jd); // 積めない → 元へ戻す
       }
+      // 隣へ移動したぶん、その方向に1回転（上面が変わる）
+      const ddx = gx - a.baseGX!;
+      const ddz = gz - a.baseGZ!;
+      const rd = Object.values(DIRS).find((d) => d.dx === ddx && d.dz === ddz);
+      if (rd) {
+        jd.orient = rd.logic(jd.orient);
+        const q = new THREE.Quaternion().setFromAxisAngle(rd.axis, rd.angle);
+        jd.mesh.quaternion.premultiply(q);
+      }
+      pushDie(gx, gz, jd); // 隣スタックの上に積む（y も設定）
       player.gx = gx;
       player.gz = gz;
     } else {
@@ -925,6 +936,7 @@ function tick(now: number) {
       const q = new THREE.Quaternion().setFromAxisAngle(anim.dir!.axis, a);
       const rel = anim.baseRel!.clone().applyQuaternion(q);
       anim.die!.mesh.position.copy(anim.pivot!).add(rel);
+      anim.die!.mesh.position.y -= (anim.drop ?? 0) * t; // 段差ぶん下る
       anim.die!.mesh.quaternion.copy(q.clone().multiply(anim.baseQuat!));
       if (anim.carry) {
         const c = anim.die!.mesh.position;
