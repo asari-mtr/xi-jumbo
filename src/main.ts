@@ -106,6 +106,7 @@ type Anim = {
   hz?: number;
   baseY?: number;
   jumpDie?: Die | null; // 一緒に跳んで積むサイコロ（無ければ素ジャンプ）
+  jumpBaseQuat?: THREE.Quaternion; // ジャンプ開始時のサイコロの向き
 };
 type Effect =
   | { kind: "rise"; mesh: THREE.Object3D; t: number; ms: number }
@@ -667,6 +668,7 @@ function tryJump() {
     hz: player.gz,
     baseY: player.mesh.position.y,
     jumpDie: jd,
+    jumpBaseQuat: jd ? jd.mesh.quaternion.clone() : undefined,
     t: 0,
     ms: CONFIG.hopMs,
   };
@@ -712,14 +714,16 @@ function finishAnim() {
         gx = a.baseGX!; // 積めない → 元へ戻す
         gz = a.baseGZ!;
       }
-      // 隣へ移動したぶん、その方向に1回転（上面が変わる）
+      // 隣へ移動したぶん、その方向に1回転（上面が変わる）— tick の補間と最終値を一致させる
       const ddx = gx - a.baseGX!;
       const ddz = gz - a.baseGZ!;
       const rd = Object.values(DIRS).find((d) => d.dx === ddx && d.dz === ddz);
       if (rd) {
         jd.orient = rd.logic(jd.orient);
         const q = new THREE.Quaternion().setFromAxisAngle(rd.axis, rd.angle);
-        jd.mesh.quaternion.premultiply(q);
+        jd.mesh.quaternion.copy(q.multiply(a.jumpBaseQuat!));
+      } else {
+        jd.mesh.quaternion.copy(a.jumpBaseQuat!);
       }
       pushDie(gx, gz, jd); // 隣スタックの上に積む（y も設定）
       player.gx = gx;
@@ -970,6 +974,16 @@ function tick(now: number) {
       cur.y = line + Math.sin(Math.PI * t) * CONFIG.hopHeight;
       if (anim.jumpDie) {
         anim.jumpDie.mesh.position.set(cur.x, cur.y + HALF, cur.z);
+        // 移動方向に合わせて滞空中に転がす（着地方向は空中で変えられる）
+        const ddx = anim.hx! - anim.baseGX!;
+        const ddz = anim.hz! - anim.baseGZ!;
+        const rd = Object.values(DIRS).find((d) => d.dx === ddx && d.dz === ddz);
+        if (rd) {
+          const q = new THREE.Quaternion().setFromAxisAngle(rd.axis, rd.angle * t);
+          anim.jumpDie.mesh.quaternion.copy(q.multiply(anim.jumpBaseQuat!));
+        } else {
+          anim.jumpDie.mesh.quaternion.copy(anim.jumpBaseQuat!);
+        }
       }
     } else {
       player.mesh.position.lerpVectors(anim.pmFrom!, anim.pmTo!, t);
