@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>XI 風 サイコロパズル</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div id="hud">
+    <div class="row"><span class="label">SCORE</span><span id="score">0</span></div>
+    <div class="row"><span class="label">DICE</span><span id="count">0</span></div>
+    <div class="row"><span class="label">CHAIN</span><span id="chain">0</span></div>
+  </div>
+
+  <div id="help">
+    <b>操作（アクイを動かす）</b><br />
+    ← ↑ → ↓ : サイコロ上を歩く（端からさらに押すと隣へ）<br />
+    Space : 持ち上げ / 設置（リフト）<br />
+    Z / Shift : ジャンプ（空中で矢印を押すと隣に飛び乗る）<br />
+    <span class="dim">上に乗ってる時 … 空きへ転がす / 隣のダイスへ乗り移る</span><br />
+    <span class="dim">床にいる時 … ダイスを押す（回転しない）</span><br />
+    <span class="dim">Space … 前方のダイスを持ち上げ → 向いた先へ設置（持ったまま移動・ジャンプ可）</span><br />
+    <span class="dim">同じ上面を「目の数」以上つなげると消える</span><br />
+    <span class="warn">床からダイスがせり上がる！埋まる前に消せ</span>
+  </div>
+
+  <div id="message" class="hidden"></div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
