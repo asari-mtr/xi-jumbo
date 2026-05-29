@@ -70,7 +70,7 @@ interface Die {
   gx: number;
   gz: number;
   orient: Orient;
-  sinking?: { t: number }; // 沈み中（0→1）。t < sinkPlayable は足場として有効
+  sinking?: { t: number; level: number }; // 沈み中。t<sinkPlayable は足場として有効。level=沈み開始時の段
 }
 type Anim = {
   type: "dieRoll" | "dieSlide" | "playerMove" | "jump";
@@ -88,6 +88,7 @@ type Anim = {
   baseRel?: THREE.Vector3;
   // dieSlide
   from?: { x: number; z: number };
+  fromY?: number;
   to?: { x: number; z: number };
   pFrom?: { x: number; z: number };
   pTo?: { x: number; z: number };
@@ -95,22 +96,20 @@ type Anim = {
   // playerMove
   pmFrom?: THREE.Vector3;
   pmTo?: THREE.Vector3;
-  mode?: PlayerMode;
+  toH?: number; // 着地後の段数
   arc?: number; // ジャンプのアーチ高さ
-  toSx?: number; // 着地後のサブ位置
-  toSz?: number;
   // jump（垂直ジャンプ＋空中で着地先決定）
   baseGX?: number;
   baseGZ?: number;
   hx?: number; // 着地先セル
   hz?: number;
   baseY?: number;
+  jumpDie?: Die | null; // 一緒に跳んで積むサイコロ（無ければ素ジャンプ）
 };
 type Effect =
   | { kind: "rise"; mesh: THREE.Object3D; t: number; ms: number }
   | { kind: "flash"; mesh: THREE.Sprite; t: number; ms: number }
   | { kind: "particle"; mesh: THREE.Sprite; vel: THREE.Vector3; t: number; ms: number };
-type PlayerMode = "ontop" | "ground";
 
 // ===== シーン基本 ================================================
 const scene = new THREE.Scene();
@@ -242,11 +241,16 @@ const DIRS: Record<string, Dir> = {
   south: { dx: 0,  dz: 1,  axis: new THREE.Vector3(1, 0, 0), angle:  Math.PI / 2, yaw:  0,           logic: (o) => ({ ...o, top: o.north, north: o.bottom, bottom: o.south, south: o.top }) },
 };
 
-// ===== 盤面状態 ==================================================
-let cells: (Die | null)[][] = [];
+// ===== 盤面状態（スタック式・最大2段）===========================
+const MAX_STACK = 2;
+let cells: Die[][][] = []; // cells[gx][gz] = 下→上のスタック
 function rebuildCells() {
   cells = [];
-  for (let x = 0; x < GRID; x++) cells.push(new Array<Die | null>(GRID).fill(null));
+  for (let x = 0; x < GRID; x++) {
+    const col: Die[][] = [];
+    for (let z = 0; z < GRID; z++) col.push([]);
+    cells.push(col);
+  }
 }
 rebuildCells();
 const dice: Die[] = [];
@@ -261,6 +265,30 @@ let over = false;
 const inBounds = (x: number, z: number) =>
   x >= 0 && x < GRID && z >= 0 && z < GRID;
 
+// ----- スタック ヘルパー（cells への直アクセスはここ経由）-----
+const height = (gx: number, gz: number): number =>
+  inBounds(gx, gz) ? cells[gx][gz].length : 0;
+const topDie = (gx: number, gz: number): Die | null => {
+  if (!inBounds(gx, gz)) return null;
+  const s = cells[gx][gz];
+  return s.length ? s[s.length - 1] : null;
+};
+const isFull = (gx: number, gz: number): boolean =>
+  height(gx, gz) >= MAX_STACK;
+const dieWorldY = (level: number): number => Y + level * CELL; // 段の中心 y
+const dieLevel = (die: Die): number => cells[die.gx][die.gz].indexOf(die);
+
+function pushDie(gx: number, gz: number, die: Die) {
+  die.gx = gx;
+  die.gz = gz;
+  cells[gx][gz].push(die);
+  const { x, z } = gridToWorld(gx, gz);
+  die.mesh.position.set(x, dieWorldY(cells[gx][gz].length - 1), z);
+}
+function popDie(gx: number, gz: number): Die | null {
+  return cells[gx][gz].pop() ?? null;
+}
+
 function gridToWorld(gx: number, gz: number) {
   return {
     x: (gx - (GRID - 1) / 2) * CELL,
@@ -270,8 +298,6 @@ function gridToWorld(gx: number, gz: number) {
 
 function makeDie(gx: number, gz: number): Die {
   const mesh = new THREE.Mesh(dieGeo, dieMaterials);
-  const { x, z } = gridToWorld(gx, gz);
-  mesh.position.set(x, Y, z);
   scene.add(mesh);
   const die: Die = {
     mesh,
@@ -287,14 +313,14 @@ function makeDie(gx: number, gz: number): Die {
     mesh.quaternion.premultiply(q);
     die.orient = d.logic(die.orient);
   }
-  cells[gx][gz] = die;
+  pushDie(gx, gz, die); // スタックに積む（y も設定）
   dice.push(die);
   return die;
 }
 
 function spawnDie(gx: number, gz: number): Die {
   const die = makeDie(gx, gz);
-  die.mesh.position.y = -CELL; // 床下から
+  die.mesh.position.y = -CELL; // 床下から（せり上がりは空マス=1段目のみ）
   effects.push({ kind: "rise", mesh: die.mesh, t: 0, ms: CONFIG.riseMs });
   return die;
 }
@@ -338,14 +364,12 @@ function makeDevil(): THREE.Group {
 }
 
 const player = {
-  mode: "ontop" as PlayerMode,
   gx: 0,
   gz: 0,
-  sx: 0, // サイコロ上面 3×3 でのサブ位置（-1,0,1）
-  sz: 0,
+  h: 1, // 立っている段数（0=床, 1, 2）。足元スタックの高さから導出
   mesh: makeDevil(),
   carrying: null as Die | null, // 持ち上げ中のダイス
-  facing: DIRS.east, // 最後に向いた方向（設置先の決定に使う）
+  facing: DIRS.east, // 最後に向いた方向（持ち上げ／設置の対象に使う）
 };
 
 // 設置先ガイド
@@ -361,37 +385,37 @@ const ghost = new THREE.Mesh(
 ghost.visible = false;
 scene.add(ghost);
 
-// 設置先マス（向いている前方の空きマス）
+// 設置先マス（向いている前方で、まだ2段に達していないマス）
 function placeTarget(): { gx: number; gz: number } | null {
   const f = player.facing;
   const fx = player.gx + f.dx;
   const fz = player.gz + f.dz;
-  if (inBounds(fx, fz) && !cells[fx][fz]) return { gx: fx, gz: fz };
+  if (inBounds(fx, fz) && !isFull(fx, fz)) return { gx: fx, gz: fz };
   return null;
 }
 
 const ghostMat = ghost.material as THREE.MeshBasicMaterial;
 function updateGhost() {
   if (player.carrying) {
-    // 設置先（前方の空きマス）を水色で
+    // 設置先（前方の積めるマス）を水色で。乗る段の高さに合わせる
     const t = placeTarget();
     if (!t) {
       ghost.visible = false;
       return;
     }
     const { x, z } = gridToWorld(t.gx, t.gz);
-    ghost.position.set(x, Y, z);
+    ghost.position.set(x, dieWorldY(height(t.gx, t.gz)), z);
     ghostMat.color.setHex(0x6cf0ff);
     ghostMat.opacity = 0.25;
     ghost.visible = true;
   } else {
-    // 持ち上げ対象（前方のダイス）を橙色でハイライト
+    // 持ち上げ対象（前方の最上段ダイス）を橙色でハイライト
     const f = player.facing;
     const tx = player.gx + f.dx;
     const tz = player.gz + f.dz;
-    if (inBounds(tx, tz) && cells[tx][tz]) {
+    if (topDie(tx, tz)) {
       const { x, z } = gridToWorld(tx, tz);
-      ghost.position.set(x, Y, z);
+      ghost.position.set(x, dieWorldY(height(tx, tz) - 1), z);
       ghostMat.color.setHex(0xffc14d);
       ghostMat.opacity = 0.33;
       ghost.visible = true;
@@ -407,20 +431,14 @@ function syncCarry() {
   player.carrying.mesh.position.set(p.x, p.y + CONFIG.liftHeight, p.z);
 }
 
-function playerWorld(
-  mode: PlayerMode,
-  gx: number,
-  gz: number,
-  sx = 0,
-  sz = 0
-) {
+// アクイの足元ワールド座標（h 段の上 = y: h*CELL）
+function playerWorld(gx: number, gz: number, h: number) {
   const { x, z } = gridToWorld(gx, gz);
-  const sub = CELL / 3; // 3×3 のサブセル幅
-  return { x: x + sx * sub, y: mode === "ontop" ? CELL : 0, z: z + sz * sub };
+  return { x, y: h * CELL, z };
 }
 
 function placeDevil() {
-  const p = playerWorld(player.mode, player.gx, player.gz, player.sx, player.sz);
+  const p = playerWorld(player.gx, player.gz, player.h);
   player.mesh.position.set(p.x, p.y, p.z);
 }
 
@@ -488,7 +506,8 @@ window.addEventListener("keydown", (e) => {
       player.mesh.rotation.y = dir.yaw;
       const hx = anim.baseGX! + dir.dx;
       const hz = anim.baseGZ! + dir.dz;
-      if (inBounds(hx, hz)) {
+      // 着地先は「2段未満」のマスのみ（2段スタックには乗れない・積めない）
+      if (inBounds(hx, hz) && height(hx, hz) < MAX_STACK) {
         anim.hx = hx;
         anim.hz = hz;
       }
@@ -499,117 +518,95 @@ window.addEventListener("keydown", (e) => {
   player.facing = dir;
   player.mesh.rotation.y = dir.yaw;
 
-  // まずサイコロ上面（3×3）の中を歩く
-  const nsx = player.sx + dir.dx;
-  const nsz = player.sz + dir.dz;
-  if (Math.abs(nsx) <= 1 && Math.abs(nsz) <= 1) {
-    player.sx = nsx;
-    player.sz = nsz;
-    startStep();
-    return;
-  }
+  const gx = player.gx;
+  const gz = player.gz;
+  const nx = gx + dir.dx;
+  const nz = gz + dir.dz;
+  if (!inBounds(nx, nz)) return;
 
-  // 端からはみ出した → 隣のサイコロ／マスへ
-  const nx = player.gx + dir.dx;
-  const nz = player.gz + dir.dz;
-  const enterSx = dir.dx !== 0 ? -dir.dx : player.sx; // 反対端から入る
-  const enterSz = dir.dz !== 0 ? -dir.dz : player.sz;
+  const h = height(gx, gz); // アクイ足元の段数
+  const hn = height(nx, nz); // 進行先の段数
 
-  if (player.mode === "ontop") {
-    const die = cells[player.gx][player.gz];
-    if (!die) {
-      player.mode = "ground";
-      placeDevil();
-      return;
-    }
-    if (!inBounds(nx, nz)) return;
-    if (cells[nx][nz]) {
-      startPlayerMove(nx, nz, "ontop", CONFIG.jumpHeight, CONFIG.moveMs, enterSx, enterSz);
-    } else if (die.sinking) {
-      return; // 沈み中のダイスは転がせない（乗り移りで脱出する）
+  if (h === 0) {
+    // 床にいる
+    if (hn === 0) {
+      startPlayerMove(nx, nz, 0); // 床を歩く
     } else {
-      startDieRoll(die, dir, nx, nz, true); // 転がす（乗ったまま）
-    }
-  } else {
-    if (!inBounds(nx, nz)) return;
-    if (cells[nx][nz]) {
+      // 前方スタックの最上段を押す（押し出し先が2段未満なら積む）
+      const die = topDie(nx, nz)!;
+      if (die.sinking) return;
       const nx2 = nx + dir.dx;
       const nz2 = nz + dir.dz;
-      if (inBounds(nx2, nz2) && !cells[nx2][nz2]) {
-        startDieSlide(cells[nx][nz]!, dir, nx2, nz2); // 押す（回転なし）
-      } else {
-        startPlayerMove(nx, nz, "ontop", CONFIG.jumpHeight, CONFIG.moveMs, enterSx, enterSz);
+      if (inBounds(nx2, nz2) && height(nx2, nz2) < MAX_STACK) {
+        startDieSlide(die, dir, nx2, nz2);
       }
-    } else {
-      startPlayerMove(nx, nz, "ground", CONFIG.jumpHeight, CONFIG.moveMs, enterSx, enterSz);
+      // それ以外は登れず停止（段差はジャンプで越える）
     }
+  } else {
+    // サイコロの上（h>=1）= 最上段の上に立つ
+    const die = topDie(gx, gz)!;
+    if (die.sinking) return; // 沈み中は転がせない
+    if (hn === h) {
+      startPlayerMove(nx, nz, hn); // 同じ高さの隣へ乗り移る
+    } else if (hn === h - 1) {
+      startDieRoll(die, dir, nx, nz, true); // 最上段を転がして隣に積む（土台は残る）
+    }
+    // hn >= h（登り）や 2段以上の段差は停止（ジャンプで越える）
   }
 });
 
 // ===== アニメ開始 ===============================================
 function startDieRoll(die: Die, dir: Dir, nx: number, nz: number, carry: boolean) {
   const from = gridToWorld(die.gx, die.gz);
-  const pivot = new THREE.Vector3(from.x + dir.dx * HALF, 0, from.z + dir.dz * HALF);
+  const level = dieLevel(die); // 転がす前の段（最上段）
+  const axisY = level * CELL; // 回転軸＝土台の上面の高さ
+  const baseY = dieWorldY(level); // 現在の中心 y
+  const pivot = new THREE.Vector3(from.x + dir.dx * HALF, axisY, from.z + dir.dz * HALF);
   anim = {
     type: "dieRoll",
     die, dir, nx, nz, carry,
     pivot,
     baseQuat: die.mesh.quaternion.clone(),
-    baseRel: new THREE.Vector3(from.x, Y, from.z).sub(pivot),
+    baseRel: new THREE.Vector3(from.x, baseY, from.z).sub(pivot),
     t: 0,
     ms: CONFIG.rollMs,
   };
-  cells[die.gx][die.gz] = null;
+  popDie(die.gx, die.gz); // 最上段を抜く（土台は残る）
   sfx(180, 0.06, "square", 0.03);
 }
 
 function startDieSlide(die: Die, _dir: Dir, nx: number, nz: number) {
+  const fromLevel = dieLevel(die);
+  // 押した後そのマスが床になる(1段だった)ならアクイは前進。土台が残る(2段だった)なら留まる
+  const advance = cells[die.gx][die.gz].length - 1 === 0;
+  const pCellGx = advance ? die.gx : player.gx;
+  const pCellGz = advance ? die.gz : player.gz;
   anim = {
     type: "dieSlide",
     die, nx, nz,
     from: gridToWorld(die.gx, die.gz),
+    fromY: dieWorldY(fromLevel),
     to: gridToWorld(nx, nz),
     pFrom: gridToWorld(player.gx, player.gz),
-    pTo: gridToWorld(die.gx, die.gz),
-    pToCell: { gx: die.gx, gz: die.gz },
+    pTo: gridToWorld(pCellGx, pCellGz),
+    pToCell: { gx: pCellGx, gz: pCellGz },
     t: 0,
     ms: CONFIG.rollMs,
   };
-  cells[die.gx][die.gz] = null;
+  popDie(die.gx, die.gz);
   sfx(140, 0.08, "sawtooth", 0.025);
 }
 
-function startPlayerMove(
-  nx: number,
-  nz: number,
-  mode: PlayerMode,
-  arc = CONFIG.jumpHeight,
-  ms = CONFIG.moveMs,
-  toSx = 0,
-  toSz = 0
-) {
-  const to = playerWorld(mode, nx, nz, toSx, toSz);
+// アクイ単体の移動（乗り移り / 床歩き）。h = 着地後の段数
+function startPlayerMove(nx: number, nz: number, h: number) {
+  const to = playerWorld(nx, nz, h);
   anim = {
     type: "playerMove",
-    nx, nz, mode, arc, toSx, toSz,
+    nx, nz, toH: h, arc: CONFIG.jumpHeight,
     pmFrom: player.mesh.position.clone(),
     pmTo: new THREE.Vector3(to.x, to.y, to.z),
     t: 0,
-    ms,
-  };
-}
-
-// サイコロ上面（3×3）の中を 1 マス歩く（サイコロは動かない・跳ねない）
-function startStep() {
-  const to = playerWorld(player.mode, player.gx, player.gz, player.sx, player.sz);
-  anim = {
-    type: "playerMove",
-    nx: player.gx, nz: player.gz, mode: player.mode, arc: 0,
-    toSx: player.sx, toSz: player.sz,
-    pmFrom: player.mesh.position.clone(),
-    pmTo: new THREE.Vector3(to.x, to.y, to.z),
-    t: 0,
-    ms: Math.round(CONFIG.moveMs * 0.7),
+    ms: CONFIG.moveMs,
   };
 }
 
@@ -620,11 +617,7 @@ function handleLift() {
     const t = placeTarget();
     if (!t) return; // 置ける場所が無い（向きを変えてから）
     const die = player.carrying;
-    const { x, z } = gridToWorld(t.gx, t.gz);
-    die.mesh.position.set(x, Y, z);
-    die.gx = t.gx;
-    die.gz = t.gz;
-    cells[t.gx][t.gz] = die;
+    pushDie(t.gx, t.gz, die); // 前方スタックの上に積む（gx/gz/y 設定）
     dice.push(die);
     player.carrying = null;
     ghost.visible = false;
@@ -632,14 +625,14 @@ function handleLift() {
     chain = 0;
     resolveMatches();
   } else {
-    // 向いている前方（隣）のダイスを持ち上げる。アクイの位置・状態は変わらない
+    // 向いている前方（隣）の最上段ダイスを持ち上げる。アクイの位置・段は変わらない
     const f = player.facing;
     const tx = player.gx + f.dx;
     const tz = player.gz + f.dz;
     if (!inBounds(tx, tz)) return;
-    const die = cells[tx][tz];
-    if (!die) return;
-    cells[tx][tz] = null;
+    const die = topDie(tx, tz);
+    if (!die || die.sinking) return;
+    popDie(tx, tz);
     const idx = dice.indexOf(die);
     if (idx >= 0) dice.splice(idx, 1);
     // せり上がり途中なら中断して通常状態に
@@ -654,9 +647,14 @@ function handleLift() {
   }
 }
 
-// ジャンプ: その場で真上に跳ぶ。滞空中に矢印を押すと、その方向の隣マスへ着地できる
+// ジャンプ: 乗っている最上段サイコロごと真上に跳ぶ。滞空中に矢印で隣の上へ着地＝積む
 function tryJump() {
   if (anim || over) return;
+  let jd: Die | null = null;
+  if (height(player.gx, player.gz) >= 1) {
+    const t = topDie(player.gx, player.gz);
+    if (t && !t.sinking) jd = t;
+  }
   anim = {
     type: "jump",
     baseGX: player.gx,
@@ -664,9 +662,11 @@ function tryJump() {
     hx: player.gx, // 着地先（初期はその場。空中で矢印を押すと変わる）
     hz: player.gz,
     baseY: player.mesh.position.y,
+    jumpDie: jd,
     t: 0,
     ms: CONFIG.hopMs,
   };
+  if (jd) popDie(player.gx, player.gz); // 跳んでいる間は元マスから外す
   sfx(320, 0.2, "sine", 0.05, 200);
 }
 
@@ -678,54 +678,59 @@ function finishAnim() {
   if (a.type === "dieRoll") {
     const die = a.die!;
     const dir = a.dir!;
-    const { x, z } = gridToWorld(a.nx!, a.nz!);
-    die.mesh.position.set(x, Y, z);
     const q = new THREE.Quaternion().setFromAxisAngle(dir.axis, dir.angle);
     die.mesh.quaternion.copy(q.multiply(a.baseQuat!));
-    die.gx = a.nx!;
-    die.gz = a.nz!;
     die.orient = dir.logic(die.orient);
-    cells[a.nx!][a.nz!] = die;
+    pushDie(a.nx!, a.nz!, die); // 隣スタックの上に積む（gx/gz/y 設定）
     if (a.carry) {
       player.gx = a.nx!;
       player.gz = a.nz!;
-      player.mode = "ontop";
-      player.sx = 0; // 転がした先では中心に立つ
-      player.sz = 0;
+      player.h = height(a.nx!, a.nz!); // 積んだ後の段数
     }
     placeDevil();
     chain = 0;
     resolveMatches();
   } else if (a.type === "dieSlide") {
     const die = a.die!;
-    const { x, z } = gridToWorld(a.nx!, a.nz!);
-    die.mesh.position.set(x, Y, z);
-    die.gx = a.nx!;
-    die.gz = a.nz!;
-    cells[a.nx!][a.nz!] = die;
+    pushDie(a.nx!, a.nz!, die); // 押し出し先に積む（先が1段なら2段目）
     player.gx = a.pToCell!.gx;
     player.gz = a.pToCell!.gz;
-    player.mode = "ground";
-    player.sx = 0;
-    player.sz = 0;
+    player.h = height(player.gx, player.gz); // 抜けた後の段数（床=0 / 残り土台）
     placeDevil();
     chain = 0;
     resolveMatches();
   } else if (a.type === "jump") {
-    // 着地：着地先セルに乗る（ダイスがあれば上、無ければ床）。中心に立つ
-    player.gx = a.hx!;
-    player.gz = a.hz!;
-    player.mode = cells[a.hx!][a.hz!] ? "ontop" : "ground";
-    player.sx = 0;
-    player.sz = 0;
+    const jd = a.jumpDie;
+    let gx = a.hx!;
+    let gz = a.hz!;
+    if (jd) {
+      if (height(gx, gz) < MAX_STACK) {
+        pushDie(gx, gz, jd); // 隣スタックの上に積む
+      } else {
+        gx = a.baseGX!;
+        gz = a.baseGZ!;
+        pushDie(gx, gz, jd); // 積めない → 元へ戻す
+      }
+      player.gx = gx;
+      player.gz = gz;
+    } else {
+      // 素ジャンプ：2段未満のマスに乗る。乗れないなら元へ
+      if (height(gx, gz) >= MAX_STACK) {
+        gx = a.baseGX!;
+        gz = a.baseGZ!;
+      }
+      player.gx = gx;
+      player.gz = gz;
+    }
+    player.h = height(player.gx, player.gz);
     placeDevil();
+    chain = 0;
+    resolveMatches();
   } else {
-    // playerMove（サブ歩行 / 乗り移り / よじ登り / 床歩き）
+    // playerMove（乗り移り / 床歩き）
     player.gx = a.nx!;
     player.gz = a.nz!;
-    player.mode = a.mode!;
-    player.sx = a.toSx ?? 0;
-    player.sz = a.toSz ?? 0;
+    player.h = a.toH ?? height(a.nx!, a.nz!);
     placeDevil();
   }
 }
@@ -740,8 +745,10 @@ function resolveMatches() {
     const visited = new Set<Die>();
     const toRemove = new Set<Die>();
 
+    // 各マスの最上段サイコロ同士で連結（下段は土台＝対象外）
     for (const die of dice) {
-      if (visited.has(die) || die.sinking) continue; // 沈み中は起点にしない
+      if (visited.has(die) || die.sinking) continue;
+      if (topDie(die.gx, die.gz) !== die) continue; // 最上段でなければ起点にしない
       const value = die.orient.top;
       const group: Die[] = [];
       const stack: Die[] = [die];
@@ -754,37 +761,37 @@ function resolveMatches() {
           const ax = cur.gx + d.dx;
           const az = cur.gz + d.dz;
           if (!inBounds(ax, az)) continue;
-          const nb = cells[ax][az]; // 沈みかけ(まだ cells にいる)も連結＝チェイン
+          const nb = topDie(ax, az); // 隣の最上段（沈みかけも cells にいれば対象＝チェイン）
           if (nb && !visited.has(nb) && nb.orient.top === value) {
             visited.add(nb);
             stack.push(nb);
           }
         }
       }
-      // グループ数（沈みかけ込み）が目の数以上なら、まだ沈んでいないものを消す
       if (value >= 2 && group.length >= value) {
         for (const g of group) if (!g.sinking) toRemove.add(g);
       }
     }
 
     if (toRemove.size) {
-      const ones = dice.filter((d) => !d.sinking && d.orient.top === 1);
+      const ones = dice.filter(
+        (d) => !d.sinking && d.orient.top === 1 && topDie(d.gx, d.gz) === d
+      );
       const touches = ones.some((one) =>
         Object.values(DIRS).some((d) => {
           const ax = one.gx + d.dx;
           const az = one.gz + d.dz;
           if (!inBounds(ax, az)) return false;
-          const nb = cells[ax][az];
+          const nb = topDie(ax, az);
           return nb !== null && toRemove.has(nb);
         })
       );
       if (touches) {
         for (const one of ones) {
-          // ハッピーワン: アクイが乗っている「1」は消えない
+          // ハッピーワン: アクイが乗っている最上段の「1」は消えない
           if (
-            player.mode === "ontop" &&
-            one.gx === player.gx &&
-            one.gz === player.gz
+            player.h >= 1 &&
+            topDie(player.gx, player.gz) === one
           )
             continue;
           toRemove.add(one);
@@ -806,7 +813,7 @@ function resolveMatches() {
 function removeDie(die: Die) {
   if (die.sinking) return; // すでに沈み中
   // すぐには消さず「沈み中」にする。半分沈むまでは足場・マッチ対象として残る
-  die.sinking = { t: 0 };
+  die.sinking = { t: 0, level: dieLevel(die) };
   burst(die.mesh.position, FACE_COLORS[die.orient.top].bg);
 }
 
@@ -859,9 +866,10 @@ function spawnInterval() {
 }
 
 function trySpawn() {
+  // せり上がりは床（空マス＝0段）にのみ出現。全マス1段以上で GAME OVER
   const free: [number, number][] = [];
   for (let x = 0; x < GRID; x++)
-    for (let z = 0; z < GRID; z++) if (!cells[x][z]) free.push([x, z]);
+    for (let z = 0; z < GRID; z++) if (height(x, z) === 0) free.push([x, z]);
   if (free.length === 0) {
     gameOver();
     return;
@@ -923,9 +931,11 @@ function tick(now: number) {
         player.mesh.position.set(c.x, c.y + HALF, c.z);
       }
     } else if (anim.type === "dieSlide") {
+      // 押されるサイコロは平行移動（着地段の高さへ向けて y も補間）
+      const toY = dieWorldY(height(anim.nx!, anim.nz!));
       anim.die!.mesh.position.set(
         lerp(anim.from!.x, anim.to!.x, t),
-        Y,
+        lerp(anim.fromY!, toY, t),
         lerp(anim.from!.z, anim.to!.z, t)
       );
       player.mesh.position.set(
@@ -934,15 +944,21 @@ function tick(now: number) {
         lerp(anim.pFrom!.z, anim.pTo!.z, t)
       );
     } else if (anim.type === "jump") {
-      // 垂直に跳びつつ、着地先セル(hx,hz)へ空中で寄っていく
+      // 真上に跳びつつ、着地先セル(hx,hz)へ空中で寄っていく
       const tw = gridToWorld(anim.hx!, anim.hz!);
       const cur = player.mesh.position;
       const k = Math.min(1, (dt / anim.ms) * 3);
       cur.x = lerp(cur.x, tw.x, k);
       cur.z = lerp(cur.z, tw.z, k);
-      const landY = cells[anim.hx!][anim.hz!] ? CELL : 0;
-      const line = lerp(anim.baseY!, landY, t);
+      // 着地後のアクイ足元高さ（サイコロを積むなら +1 段）
+      const topH = anim.jumpDie
+        ? height(anim.hx!, anim.hz!) + 1
+        : height(anim.hx!, anim.hz!);
+      const line = lerp(anim.baseY!, topH * CELL, t);
       cur.y = line + Math.sin(Math.PI * t) * CONFIG.hopHeight;
+      if (anim.jumpDie) {
+        anim.jumpDie.mesh.position.set(cur.x, cur.y + HALF, cur.z);
+      }
     } else {
       player.mesh.position.lerpVectors(anim.pmFrom!, anim.pmTo!, t);
       player.mesh.position.y += Math.sin(Math.PI * t) * (anim.arc ?? CONFIG.jumpHeight);
@@ -980,18 +996,20 @@ function tick(now: number) {
     }
   }
 
-  // 沈み中ダイスの進行（そのまま下へ沈む）
+  // 沈み中ダイスの進行（そのまま下へ沈む。半分沈むとスタックから論理除去）
   for (let i = dice.length - 1; i >= 0; i--) {
     const die = dice[i];
     if (!die.sinking) continue;
     die.sinking.t = Math.min(1, die.sinking.t + dt / CONFIG.sinkMs);
     const t = die.sinking.t;
-    die.mesh.position.y = Y - t * CELL * CONFIG.sinkDepth;
+    die.mesh.position.y = dieWorldY(die.sinking.level) - t * CELL * CONFIG.sinkDepth;
     const s = 1 - t * 0.4;
     die.mesh.scale.set(s, s, s);
-    // 半分沈んだら論理消滅（足場・マッチ対象から外す）
-    if (t >= CONFIG.sinkPlayable && cells[die.gx][die.gz] === die) {
-      cells[die.gx][die.gz] = null;
+    // 半分沈んだらスタックから除去（足場・マッチ対象から外す）→ 下段が露出
+    if (t >= CONFIG.sinkPlayable) {
+      const st = cells[die.gx][die.gz];
+      const idx = st.indexOf(die);
+      if (idx >= 0) st.splice(idx, 1);
     }
     // 完全に沈みきったら除去
     if (t >= 1) {
@@ -1000,9 +1018,9 @@ function tick(now: number) {
     }
   }
 
-  // 足場が消えていたら床へ落ちる（半分沈むまでは cells に残るので落ちない）
-  if (!anim && player.mode === "ontop" && !cells[player.gx][player.gz]) {
-    player.mode = "ground";
+  // 足場の段数が減っていたら1段下／床へ落ちる（半分沈むまでは残るので落ちない）
+  if (!anim && player.h !== height(player.gx, player.gz)) {
+    player.h = height(player.gx, player.gz);
     placeDevil();
   }
 
@@ -1056,11 +1074,9 @@ function restart() {
   const count = Math.min(CONFIG.startDice, free.length);
   for (let i = 0; i < count; i++) makeDie(free[i][0], free[i][1]);
 
-  player.mode = "ontop";
   player.gx = dice[0].gx;
   player.gz = dice[0].gz;
-  player.sx = 0;
-  player.sz = 0;
+  player.h = height(player.gx, player.gz);
   placeDevil();
   player.mesh.rotation.y = player.facing.yaw;
   updateHud();
