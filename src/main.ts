@@ -13,7 +13,7 @@ const CONFIG = {
   hopMs: 500, // ジャンプ(Z/Shift)の滞空時間（空中で着地先を決める余裕）
   sinkMs: 1100, // 消滅（沈む）アニメ時間（長いほどゆっくり沈む）
   sinkPlayable: 0.5, // この割合まで沈む間は足場として乗れる（地面に落ちない）
-  riseMs: 320, // せり上がりアニメ時間
+  riseMs: 1500, // せり上がり（出現）アニメ時間
   // せり上がり（即反映）
   spawnBase: 6000, // せり上がり間隔（開始）
   spawnMin: 2800, // せり上がり間隔（最短）
@@ -973,7 +973,8 @@ function tick(now: number) {
       const line = lerp(anim.baseY!, topH * CELL, t);
       cur.y = line + Math.sin(Math.PI * t) * CONFIG.hopHeight;
       if (anim.jumpDie) {
-        anim.jumpDie.mesh.position.set(cur.x, cur.y + HALF, cur.z);
+        // アクイは乗っているサイコロの上 → サイコロ中心はアクイ足元の下
+        anim.jumpDie.mesh.position.set(cur.x, cur.y - HALF, cur.z);
         // 移動方向に合わせて滞空中に転がす（着地方向は空中で変えられる）
         const ddx = anim.hx! - anim.baseGX!;
         const ddz = anim.hz! - anim.baseGZ!;
@@ -1044,10 +1045,15 @@ function tick(now: number) {
     }
   }
 
-  // 足場の段数が減っていたら1段下／床へ落ちる（半分沈むまでは残るので落ちない）
-  if (!anim && player.h !== height(player.gx, player.gz)) {
-    player.h = height(player.gx, player.gz);
-    placeDevil();
+  // 足元のサイコロが沈み中なら一緒に沈む。沈みきって段数が減れば1段下／床へ落ちる
+  if (!anim) {
+    const fd = topDie(player.gx, player.gz);
+    if (fd && fd.sinking) {
+      player.mesh.position.y = fd.mesh.position.y + HALF; // 沈むサイコロの上面に追従
+    } else if (player.h !== height(player.gx, player.gz)) {
+      player.h = height(player.gx, player.gz);
+      placeDevil();
+    }
   }
 
   // せり上がりタイマー
@@ -1123,28 +1129,28 @@ function buildGui() {
   fBoard.add(CONFIG, "startDice", 0, 40, 1).name("開始ダイス数").onFinishChange(restart);
 
   const fTime = gui.addFolder("Timing (ms)");
-  fTime.add(CONFIG, "rollMs", 30, 600, 10).name("転がし");
-  fTime.add(CONFIG, "moveMs", 30, 600, 10).name("歩き / 乗り移り");
-  fTime.add(CONFIG, "hopMs", 60, 800, 10).name("ジャンプ(Z)");
-  fTime.add(CONFIG, "sinkMs", 200, 3000, 50).name("消滅(沈み)");
+  fTime.add(CONFIG, "rollMs", 30, 1200, 10).name("転がし");
+  fTime.add(CONFIG, "moveMs", 30, 1200, 10).name("歩き / 乗り移り");
+  fTime.add(CONFIG, "hopMs", 60, 2000, 10).name("ジャンプ(Z)");
+  fTime.add(CONFIG, "sinkMs", 200, 5000, 50).name("消滅(沈み)");
   fTime.add(CONFIG, "sinkPlayable", 0.1, 1, 0.05).name("乗れる沈み割合");
-  fTime.add(CONFIG, "riseMs", 100, 1500, 10).name("せり上がり");
+  fTime.add(CONFIG, "riseMs", 100, 4000, 10).name("せり上がり(出現)");
 
   const fSpawn = gui.addFolder("Spawn");
-  fSpawn.add(CONFIG, "spawnBase", 1000, 12000, 100).name("間隔(開始)");
-  fSpawn.add(CONFIG, "spawnMin", 500, 8000, 100).name("間隔(最短)");
-  fSpawn.add(CONFIG, "spawnAccel", 0, 0.1, 0.001).name("短縮レート");
+  fSpawn.add(CONFIG, "spawnBase", 1000, 30000, 100).name("間隔(開始)");
+  fSpawn.add(CONFIG, "spawnMin", 500, 20000, 100).name("間隔(最短)");
+  fSpawn.add(CONFIG, "spawnAccel", 0, 0.2, 0.001).name("短縮レート");
 
   const fFx = gui.addFolder("Motion / Effects");
-  fFx.add(CONFIG, "jumpHeight", 0, 1, 0.01).name("小ジャンプ高さ");
-  fFx.add(CONFIG, "hopHeight", 0, 1.5, 0.05).name("ホップ高さ(Z)");
-  fFx.add(CONFIG, "liftHeight", 0.4, 1.6, 0.01).name("持ち上げ高さ");
-  fFx.add(CONFIG, "sinkDepth", 0.5, 3, 0.05).name("沈み込み深さ");
-  fFx.add(CONFIG, "flashScale", 1, 6, 0.1).name("フラッシュ拡大");
-  fFx.add(CONFIG, "particleCount", 0, 30, 1).name("パーティクル数");
-  fFx.add(CONFIG, "particleSpeed", 0, 5, 0.1).name("パーティクル初速");
-  fFx.add(CONFIG, "gravity", 0, 20, 0.5).name("重力");
-  fFx.add(CONFIG, "sfxVolume", 0, 0.2, 0.005).name("効果音量");
+  fFx.add(CONFIG, "jumpHeight", 0, 2, 0.01).name("小ジャンプ高さ");
+  fFx.add(CONFIG, "hopHeight", 0, 3, 0.05).name("ホップ高さ(Z)");
+  fFx.add(CONFIG, "liftHeight", 0.4, 2.5, 0.01).name("持ち上げ高さ");
+  fFx.add(CONFIG, "sinkDepth", 0.5, 5, 0.05).name("沈み込み深さ");
+  fFx.add(CONFIG, "flashScale", 1, 10, 0.1).name("フラッシュ拡大");
+  fFx.add(CONFIG, "particleCount", 0, 60, 1).name("パーティクル数");
+  fFx.add(CONFIG, "particleSpeed", 0, 10, 0.1).name("パーティクル初速");
+  fFx.add(CONFIG, "gravity", 0, 40, 0.5).name("重力");
+  fFx.add(CONFIG, "sfxVolume", 0, 0.4, 0.005).name("効果音量");
 
   const io = {
     export() {
