@@ -108,6 +108,7 @@ type Anim = {
   baseY?: number;
   jumpDie?: Die | null; // 一緒に跳んで積むサイコロ（無ければ素ジャンプ）
   jumpBaseQuat?: THREE.Quaternion; // ジャンプ開始時のサイコロの向き
+  jumpLocked?: boolean; // 着地方向を最初の入力で固定したか
 };
 type Effect =
   | { kind: "rise"; mesh: THREE.Object3D; t: number; ms: number }
@@ -502,17 +503,18 @@ window.addEventListener("keydown", (e) => {
 
   const dir = DIRS[dirName];
 
-  // ジャンプ滞空中: 矢印で着地先（ジャンプ元の隣マス）を決める＝空中で飛び乗る
+  // ジャンプ滞空中: 最初に押した方向で着地先を1回だけ決める（以降の入力は無視）
   if (anim) {
-    if (anim.type === "jump") {
-      player.facing = dir;
-      player.mesh.rotation.y = dir.yaw;
+    if (anim.type === "jump" && !anim.jumpLocked) {
       const hx = anim.baseGX! + dir.dx;
       const hz = anim.baseGZ! + dir.dz;
       // 着地先は「2段未満」のマスのみ（2段スタックには乗れない・積めない）
       if (inBounds(hx, hz) && height(hx, hz) < MAX_STACK) {
+        player.facing = dir;
+        player.mesh.rotation.y = dir.yaw;
         anim.hx = hx;
         anim.hz = hz;
+        anim.jumpLocked = true; // 最初の有効入力で固定
       }
     }
     return;
