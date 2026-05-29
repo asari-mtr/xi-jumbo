@@ -94,6 +94,7 @@ type Anim = {
   pFrom?: { x: number; z: number };
   pTo?: { x: number; z: number };
   pToCell?: { gx: number; gz: number };
+  pH?: number; // 押し中・前進後のアクイの段（不変）
   // playerMove
   pmFrom?: THREE.Vector3;
   pmTo?: THREE.Vector3;
@@ -529,33 +530,26 @@ window.addEventListener("keydown", (e) => {
   const h = height(gx, gz); // アクイ足元の段数
   const hn = height(nx, nz); // 進行先の段数
 
-  if (h === 0) {
-    // 床にいる
-    if (hn === 0) {
-      startPlayerMove(nx, nz, 0); // 床を歩く
-    } else {
-      // 前方スタックの最上段を押す（押し出し先が空マスのときだけ＝積まない）
-      const die = topDie(nx, nz)!;
-      if (die.sinking) return;
-      const nx2 = nx + dir.dx;
-      const nz2 = nz + dir.dz;
-      if (inBounds(nx2, nz2) && height(nx2, nz2) === 0) {
-        startDieSlide(die, dir, nx2, nz2);
-      }
-      // それ以外は登れず停止（段差はジャンプで越える）
+  if (hn === h) {
+    // 同じ高さ → 床歩き / 乗り移り
+    startPlayerMove(nx, nz, h);
+  } else if (hn === h + 1) {
+    // 正面（アクイ足元と同じ段）の最上段サイコロを押す（回転せず平行移動・目は変わらない）
+    const die = topDie(nx, nz)!;
+    if (die.sinking) return;
+    const nx2 = nx + dir.dx;
+    const nz2 = nz + dir.dz;
+    // 押し出し先の高さがアクイと同じ段なら、その段に押し込める（床→1段目 / 1段→2段目）
+    if (inBounds(nx2, nz2) && height(nx2, nz2) === h) {
+      startDieSlide(die, dir, nx2, nz2);
     }
-  } else {
-    // サイコロの上（h>=1）= 最上段の上に立つ
+  } else if (hn < h) {
+    // 低い隣 → 乗っている最上段を転がす（空マスなら降りる / 1段なら2段目に積む）
     const die = topDie(gx, gz)!;
-    if (die.sinking) return; // 沈み中は転がせない
-    if (hn === h) {
-      startPlayerMove(nx, nz, hn); // 同じ高さの隣へ乗り移る
-    } else if (hn < h) {
-      // 低い隣 → 最上段を転がす。空マスなら降りる、1段なら2段目に積む（土台は残る）
-      startDieRoll(die, dir, nx, nz, true);
-    }
-    // hn > h（登り）は停止（ジャンプで越える）
+    if (die.sinking) return;
+    startDieRoll(die, dir, nx, nz, true);
   }
+  // hn > h + 1 → 段差が大きく登れない（ジャンプで越える）
 });
 
 // ===== アニメ開始 ===============================================
@@ -581,20 +575,17 @@ function startDieRoll(die: Die, dir: Dir, nx: number, nz: number, carry: boolean
 }
 
 function startDieSlide(die: Die, _dir: Dir, nx: number, nz: number) {
-  const fromLevel = dieLevel(die);
-  // 押した後そのマスが床になる(1段だった)ならアクイは前進。土台が残る(2段だった)なら留まる
-  const advance = cells[die.gx][die.gz].length - 1 === 0;
-  const pCellGx = advance ? die.gx : player.gx;
-  const pCellGz = advance ? die.gz : player.gz;
+  const level = dieLevel(die); // 押す前の段（= アクイ足元 h）
   anim = {
     type: "dieSlide",
     die, nx, nz,
     from: gridToWorld(die.gx, die.gz),
-    fromY: dieWorldY(fromLevel),
+    fromY: dieWorldY(level),
     to: gridToWorld(nx, nz),
     pFrom: gridToWorld(player.gx, player.gz),
-    pTo: gridToWorld(pCellGx, pCellGz),
-    pToCell: { gx: pCellGx, gz: pCellGz },
+    pTo: gridToWorld(die.gx, die.gz), // アクイは押したサイコロが居たマスへ前進
+    pToCell: { gx: die.gx, gz: die.gz },
+    pH: player.h, // 押し中・前進後のアクイの段（不変）
     t: 0,
     ms: CONFIG.rollMs,
   };
@@ -956,7 +947,7 @@ function tick(now: number) {
       );
       player.mesh.position.set(
         lerp(anim.pFrom!.x, anim.pTo!.x, t),
-        0,
+        (anim.pH ?? 0) * CELL,
         lerp(anim.pFrom!.z, anim.pTo!.z, t)
       );
     } else if (anim.type === "jump") {
