@@ -228,13 +228,16 @@ const dieMaterials = FACE_VALUES.map(
 );
 const dieGeo = new THREE.BoxGeometry(CELL, CELL, CELL);
 
-// 画面上部に表示する「今乗っているサイコロ」のプレビュー（カメラに固定）
+// 画面左上に表示する「今乗っているサイコロ」のプレビュー（カメラに固定）
 scene.add(camera);
+const miniPivot = new THREE.Group();
+miniPivot.position.set(-3.7, 1.7, -5); // カメラ前方・左上
+miniPivot.rotation.set(0.5, -0.7, 0); // 上・前・横の3面が見える角度に傾ける
+miniPivot.visible = false;
+camera.add(miniPivot);
 const miniDie = new THREE.Mesh(dieGeo, dieMaterials);
-miniDie.scale.setScalar(0.5);
-miniDie.position.set(0, 1.85, -5); // カメラ前方・上部（FOV45 で画面上端あたり）
-miniDie.visible = false;
-camera.add(miniDie);
+miniDie.scale.setScalar(0.55);
+miniPivot.add(miniDie); // 向きは tick で乗っているサイコロに連動
 
 // 柔らかい光テクスチャ（フラッシュ・パーティクル用）
 function makeGlowTexture(): THREE.Texture {
@@ -1213,13 +1216,20 @@ function tick(now: number) {
     }
   }
 
-  // 上部プレビュー: 今乗っているサイコロの向きに連動
-  const ridden = topDie(player.gx, player.gz);
-  if (ridden && !ridden.sinking && !ridden.falling) {
-    miniDie.visible = true;
-    miniDie.quaternion.copy(ridden.mesh.quaternion);
+  // 上部プレビュー: 今乗っているサイコロに連動（転がし中は転がるサイコロ、乗り移ったら切替）
+  let pvTarget: Die | null;
+  if (anim && anim.type === "dieRoll" && anim.carry) {
+    pvTarget = anim.die ?? null; // 転がし中は転がっているサイコロに連動
+  } else if (anim && anim.type === "jump" && anim.jumpDie) {
+    pvTarget = anim.jumpDie; // ジャンプ中は担いでいるサイコロ
   } else {
-    miniDie.visible = false;
+    pvTarget = topDie(player.gx, player.gz); // 通常は足元のサイコロ
+  }
+  if (pvTarget && !pvTarget.sinking && !pvTarget.falling) {
+    miniPivot.visible = true;
+    miniDie.quaternion.copy(pvTarget.mesh.quaternion);
+  } else {
+    miniPivot.visible = false;
   }
 
   // せり上がりタイマー
