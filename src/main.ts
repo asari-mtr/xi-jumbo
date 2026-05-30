@@ -29,6 +29,8 @@ const CONFIG = {
   particleSpeed: 1.3, // パーティクルの初速
   gravity: 7, // パーティクルにかかる重力
   fallGravity: 22, // 土台が消えて落ちるサイコロの重力
+  weightSink: 0.07, // 乗っているサイコロがキャラの重みで沈む量
+  chainReturn: 0.1, // チェーン時に消えかけを戻す量（沈み進行 t を戻す）
   sfxVolume: 0.04, // 効果音の音量
   showLog: true, // 操作・消滅ログを画面に表示（デバッグ用）
 };
@@ -226,6 +228,14 @@ const dieMaterials = FACE_VALUES.map(
 );
 const dieGeo = new THREE.BoxGeometry(CELL, CELL, CELL);
 
+// 画面上部に表示する「今乗っているサイコロ」のプレビュー（カメラに固定）
+scene.add(camera);
+const miniDie = new THREE.Mesh(dieGeo, dieMaterials);
+miniDie.scale.setScalar(0.5);
+miniDie.position.set(0, 1.85, -5); // カメラ前方・上部（FOV45 で画面上端あたり）
+miniDie.visible = false;
+camera.add(miniDie);
+
 // 柔らかい光テクスチャ（フラッシュ・パーティクル用）
 function makeGlowTexture(): THREE.Texture {
   const s = 64;
@@ -271,6 +281,7 @@ let link = 0; // リンク（1手で同時に消した独立グループ数）
 let elapsed = 0;
 let spawnTimer = 0;
 let over = false;
+let weightedDie: Die | null = null; // キャラの重みで沈めている足元のサイコロ
 
 const inBounds = (x: number, z: number) =>
   x >= 0 && x < GRID && z >= 0 && z < GRID;
@@ -842,6 +853,12 @@ function resolveMatches() {
       chained = true;
       removedAny = true;
       chain++;
+      // チェーン中は消えかけを少し上に戻し、次のチェーンを繋ぎやすくする
+      if (chain >= 2 && CONFIG.chainReturn > 0) {
+        for (const d of dice) {
+          if (d.sinking) d.sinking.t = Math.max(0, d.sinking.t - CONFIG.chainReturn);
+        }
+      }
       link = Math.max(1, links); // このパスの同時消し数
       // スコア = 消した数 × 10 × 連鎖倍率 × 同時消し（リンク）倍率
       score += toRemove.size * 10 * chain * link;
@@ -1164,16 +1181,45 @@ function tick(now: number) {
   }
   if (landed && !anim) resolveMatches(); // 落ちて着地した結果での再マッチ＝チェイン
 
-  // 足元のサイコロが沈み/落下中なら追従。段数が減れば1段下／床へ落ちる
+  // 足元のサイコロが沈み/落下中なら追従。通常なら重みで少し沈める。段数が減れば落ちる
   if (!anim) {
     const fd = topDie(player.gx, player.gz);
+    // 前フレームに重みで沈めたサイコロを元の高さへ戻す
+    if (
+      weightedDie &&
+      weightedDie !== fd &&
+      !weightedDie.sinking &&
+      !weightedDie.falling
+    ) {
+      const wl = dieLevel(weightedDie);
+      if (wl >= 0) weightedDie.mesh.position.y = dieWorldY(wl);
+    }
+    weightedDie = null;
+
     if (fd && (fd.sinking || fd.falling || fd.reserved)) {
       player.h = height(player.gx, player.gz);
       player.mesh.position.y = fd.mesh.position.y + HALF; // 沈む/落ちるサイコロの上面に追従
+    } else if (fd) {
+      // 通常のサイコロに乗っている → キャラの重みで少し沈める
+      player.h = height(player.gx, player.gz);
+      const l = dieLevel(fd);
+      const sunk = dieWorldY(l) - CONFIG.weightSink;
+      fd.mesh.position.y = sunk;
+      player.mesh.position.y = sunk + HALF;
+      weightedDie = fd;
     } else if (player.h !== height(player.gx, player.gz)) {
       player.h = height(player.gx, player.gz);
       placeDevil();
     }
+  }
+
+  // 上部プレビュー: 今乗っているサイコロの向きに連動
+  const ridden = topDie(player.gx, player.gz);
+  if (ridden && !ridden.sinking && !ridden.falling) {
+    miniDie.visible = true;
+    miniDie.quaternion.copy(ridden.mesh.quaternion);
+  } else {
+    miniDie.visible = false;
   }
 
   // せり上がりタイマー
@@ -1295,6 +1341,8 @@ function buildGui() {
   fFx.add(CONFIG, "particleSpeed", 0, 10, 0.1).name("パーティクル初速");
   fFx.add(CONFIG, "gravity", 0, 40, 0.5).name("重力(粒子)");
   fFx.add(CONFIG, "fallGravity", 0, 60, 1).name("落下重力(サイコロ)");
+  fFx.add(CONFIG, "weightSink", 0, 0.3, 0.01).name("重み沈み");
+  fFx.add(CONFIG, "chainReturn", 0, 0.5, 0.01).name("チェーン戻し");
   fFx.add(CONFIG, "sfxVolume", 0, 0.4, 0.005).name("効果音量");
 
   const io = {
