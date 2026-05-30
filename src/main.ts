@@ -536,15 +536,17 @@ window.addEventListener("keydown", (e) => {
     // 同じ高さ → 床歩き / 乗り移り
     startPlayerMove(nx, nz, h);
   } else if (hn === h + 1) {
-    // 正面（アクイ足元と同じ段）の最上段サイコロを押す（回転せず平行移動・目は変わらない）
+    // 正面（アクイ足元と同じ段）の最上段サイコロを押す（回転しない・目は変わらない）
     const die = topDie(nx, nz)!;
     if (die.sinking) return;
     const nx2 = nx + dir.dx;
     const nz2 = nz + dir.dz;
-    // 押し出し先の高さがアクイと同じ段なら、その段に押し込める（床→1段目 / 1段→2段目）
-    if (inBounds(nx2, nz2) && height(nx2, nz2) === h) {
-      startDieSlide(die, dir, nx2, nz2);
-    }
+    if (!inBounds(nx2, nz2)) return;
+    const h2 = height(nx2, nz2);
+    // 床からの押しは空マスへのみ（積まない）。
+    // 上段(h>=1)の押しは押し出し先が2段未満なら可：低ければ落ちる／1段ならその上に乗る。2段なら押せない
+    const canPush = h === 0 ? h2 === 0 : h2 < MAX_STACK;
+    if (canPush) startDieSlide(die, dir, nx2, nz2);
   } else if (hn < h) {
     // 低い隣 → 乗っている最上段を転がす（空マスなら降りる / 1段なら2段目に積む）
     const die = topDie(gx, gz)!;
