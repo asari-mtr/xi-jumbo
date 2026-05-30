@@ -261,7 +261,8 @@ const dice: Die[] = [];
 const effects: Effect[] = [];
 let anim: Anim | null = null; // プレイヤー起因の単一アニメ（あいだは入力ロック）
 let score = 0;
-let chain = 0;
+let chain = 0; // 連鎖（沈みかけに繋いで連続で消した回数）
+let link = 0; // リンク（1手で同時に消した独立グループ数）
 let elapsed = 0;
 let spawnTimer = 0;
 let over = false;
@@ -750,10 +751,12 @@ function finishAnim() {
 // - 「1」は単独では消えない。消滅グループに隣接した 1 があると全消し
 function resolveMatches() {
   let chained = true;
+  let removedAny = false;
   while (chained) {
     chained = false;
     const visited = new Set<Die>();
     const toRemove = new Set<Die>();
+    let links = 0; // このパスで同時に成立した独立グループ数
 
     // 各マスの最上段サイコロ同士で連結（下段は土台＝対象外）
     for (const die of dice) {
@@ -779,6 +782,7 @@ function resolveMatches() {
         }
       }
       if (value >= 2 && group.length >= value) {
+        links++; // 同時に成立したグループを1つカウント
         for (const g of group) if (!g.sinking) toRemove.add(g);
       }
     }
@@ -811,12 +815,24 @@ function resolveMatches() {
 
     if (toRemove.size) {
       chained = true;
+      removedAny = true;
       chain++;
-      score += toRemove.size * 10 * chain; // 連鎖ボーナス
+      link = Math.max(1, links); // このパスの同時消し数
+      // スコア = 消した数 × 10 × 連鎖倍率 × 同時消し（リンク）倍率
+      score += toRemove.size * 10 * chain * link;
       for (const die of toRemove) removeDie(die);
-      sfx(520 + chain * 120, 0.18, "triangle", 0.05, 880 + chain * 120);
+      if (link >= 2) {
+        // リンク（同時消し）は高めの音で強調
+        sfx(680 + chain * 100, 0.26, "triangle", 0.07, 1240 + chain * 100);
+      } else {
+        sfx(520 + chain * 120, 0.18, "triangle", 0.05, 880 + chain * 120);
+      }
       updateHud();
     }
+  }
+  if (!removedAny) {
+    link = 0; // この手では何も消えなかった
+    updateHud();
   }
 }
 
@@ -901,12 +917,14 @@ function gameOver() {
 const $score = document.getElementById("score")!;
 const $count = document.getElementById("count")!;
 const $chain = document.getElementById("chain")!;
+const $link = document.getElementById("link")!;
 const $message = document.getElementById("message")!;
 
 function updateHud() {
   $score.textContent = String(score);
   $count.textContent = String(dice.filter((d) => !d.sinking).length);
   $chain.textContent = String(chain);
+  $link.textContent = String(link);
 }
 
 function showMessage(text: string, clickToRestart: boolean) {
@@ -1099,6 +1117,7 @@ function restart() {
   ghost.visible = false;
   score = 0;
   chain = 0;
+  link = 0;
   elapsed = 0;
   spawnTimer = 0;
   over = false;
