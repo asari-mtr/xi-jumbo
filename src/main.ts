@@ -951,13 +951,17 @@ const $link = document.getElementById("link")!;
 const $message = document.getElementById("message")!;
 const $log = document.getElementById("log")!;
 
-// 操作・消滅ログ（直近のみ表示）
+// 操作・消滅ログ。logLines=画面表示（直近）、logAll=コピー用（全履歴）
 const logLines: string[] = [];
+const logAll: string[] = [];
 function logMsg(msg: string) {
   if (!CONFIG.showLog) return;
   logLines.push(msg);
-  if (logLines.length > 14) logLines.shift();
+  if (logLines.length > 16) logLines.shift();
+  logAll.push(msg);
+  if (logAll.length > 500) logAll.shift();
   $log.textContent = logLines.join("\n");
+  console.log("[XI] " + msg);
 }
 
 function updateHud() {
@@ -1241,6 +1245,22 @@ function buildGui() {
       $log.textContent = "";
     }
   });
+  fBoard
+    .add(
+      {
+        copyLog() {
+          const text = logAll.join("\n");
+          if (navigator.clipboard?.writeText) {
+            void navigator.clipboard.writeText(text);
+            window.alert("ログをクリップボードにコピーしました");
+          } else {
+            window.prompt("ログをコピーしてください", text);
+          }
+        },
+      },
+      "copyLog"
+    )
+    .name("📋 ログをコピー");
 
   const fTime = gui.addFolder("Timing (ms)");
   fTime.add(CONFIG, "rollMs", 30, 1200, 10).name("転がし");

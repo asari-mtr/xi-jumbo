@@ -107,7 +107,11 @@ canvas {
   white-space: pre;
   text-align: right;
   z-index: 10;
-  pointer-events: none;
+  pointer-events: auto;
+  user-select: text;
+  -webkit-user-select: text;
+  max-height: 40vh;
+  overflow-y: auto;
   backdrop-filter: blur(4px);
 }
 
