@@ -28,7 +28,6 @@ const CONFIG = {
   particleCount: 7, // 消滅パーティクル数
   particleSpeed: 1.3, // パーティクルの初速
   gravity: 7, // パーティクルにかかる重力
-  fallGravity: 22, // 土台が消えたサイコロが落ちる重力
   sfxVolume: 0.04, // 効果音の音量
 };
 
@@ -73,7 +72,7 @@ interface Die {
   gz: number;
   orient: Orient;
   sinking?: { t: number; level: number; duration: number }; // 沈み中。t<sinkPlayable は足場。level=開始時の段。duration=この目の消滅時間
-  falling?: { toY: number; vy: number }; // 土台が消えて落下中（toY=着地 y、vy=落下速度）
+  reserved?: boolean; // 下段が消え始め、一緒に沈んでいる上段（チェーン予約中）
 }
 type Anim = {
   type: "dieRoll" | "dieSlide" | "playerMove" | "jump";
@@ -763,7 +762,7 @@ function resolveMatches() {
 
     // 同じ段（レベル）のサイコロ同士で連結。下段が消えると上が落ちて別レベルで再判定＝チェイン
     for (const die of dice) {
-      if (visited.has(die) || die.sinking || die.falling) continue;
+      if (visited.has(die) || die.sinking || die.reserved) continue;
       const L = dieLevel(die); // この連結のレベル
       const value = die.orient.top;
       const group: Die[] = [];
@@ -778,7 +777,7 @@ function resolveMatches() {
           const az = cur.gz + d.dz;
           if (!inBounds(ax, az)) continue;
           const nb = cells[ax][az][L]; // 隣マスの「同じ段」のサイコロ
-          if (nb && !visited.has(nb) && !nb.falling && nb.orient.top === value) {
+          if (nb && !visited.has(nb) && !nb.reserved && nb.orient.top === value) {
             visited.add(nb);
             stack.push(nb);
           }
@@ -792,7 +791,7 @@ function resolveMatches() {
 
     if (toRemove.size) {
       const ones = dice.filter(
-        (d) => !d.sinking && !d.falling && d.orient.top === 1 && topDie(d.gx, d.gz) === d
+        (d) => !d.sinking && !d.reserved && d.orient.top === 1 && topDie(d.gx, d.gz) === d
       );
       const touches = ones.some((one) =>
         Object.values(DIRS).some((d) => {
@@ -847,12 +846,16 @@ function sinkDuration(value: number) {
 function removeDie(die: Die) {
   if (die.sinking) return; // すでに沈み中
   // すぐには消さず「沈み中」にする。半分沈むまでは足場・マッチ対象として残る
+  const idx = dieLevel(die);
   die.sinking = {
     t: 0,
-    level: dieLevel(die),
+    level: idx,
     duration: sinkDuration(die.orient.top),
   };
   burst(die.mesh.position, FACE_COLORS[die.orient.top].bg);
+  // 上に乗っているサイコロは一緒に沈み、半分で繰り上がる（チェーン予約）
+  const st = cells[die.gx][die.gz];
+  for (let l = idx + 1; l < st.length; l++) st[l].reserved = true;
 }
 
 // 消滅エフェクト: 中央フラッシュ + 飛び散るパーティクル
@@ -1060,7 +1063,8 @@ function tick(now: number) {
     }
   }
 
-  // 沈み中ダイスの進行（目ごとの duration で沈む。半分沈むとスタックから論理除去）
+  // 沈み中ダイスの進行（目ごとの duration で沈む）。上の予約サイコロは一緒に沈む
+  let chainPending = false;
   for (let i = dice.length - 1; i >= 0; i--) {
     const die = dice[i];
     if (!die.sinking) continue;
@@ -1069,16 +1073,25 @@ function tick(now: number) {
     die.mesh.position.y = dieWorldY(die.sinking.level) - t * CELL * CONFIG.sinkDepth;
     const s = 1 - t * 0.4;
     die.mesh.scale.set(s, s, s);
-    // 半分沈んだらスタックから除去 → 上に乗っていたサイコロを落下開始（チェインの起点）
-    if (t >= CONFIG.sinkPlayable) {
-      const st = cells[die.gx][die.gz];
-      const idx = st.indexOf(die);
-      if (idx >= 0) {
-        st.splice(idx, 1);
-        for (let l = idx; l < st.length; l++) {
-          if (!st[l].falling) st[l].falling = { toY: dieWorldY(l), vy: 0 };
+
+    const st = cells[die.gx][die.gz];
+    const myIdx = st.indexOf(die);
+    // 上に乗っている予約サイコロを下段に追従させて一緒に沈める
+    if (myIdx >= 0) {
+      for (let l = myIdx + 1; l < st.length; l++) {
+        if (st[l].reserved) {
+          st[l].mesh.position.y = die.mesh.position.y + (l - myIdx) * CELL;
         }
       }
+    }
+    // 半分沈んだら下段を除去 → 上段が繰り上がって確定し、チェーン予約を判定
+    if (t >= CONFIG.sinkPlayable && myIdx >= 0) {
+      st.splice(myIdx, 1);
+      for (let l = myIdx; l < st.length; l++) {
+        st[l].reserved = false;
+        st[l].mesh.position.y = dieWorldY(l); // 新しい段に確定
+      }
+      chainPending = true;
     }
     // 完全に沈みきったら除去
     if (t >= 1) {
@@ -1086,27 +1099,14 @@ function tick(now: number) {
       dice.splice(i, 1);
     }
   }
+  if (chainPending && !anim) resolveMatches(); // 半分沈んだ時点でのチェーン予約判定
 
-  // 落下中サイコロ（土台が消えて落ちる）。着地したらチェイン判定
-  let landed = false;
-  for (const die of dice) {
-    if (!die.falling) continue;
-    die.falling.vy += CONFIG.fallGravity * dts;
-    die.mesh.position.y -= die.falling.vy * dts;
-    if (die.mesh.position.y <= die.falling.toY) {
-      die.mesh.position.y = die.falling.toY;
-      die.falling = undefined;
-      landed = true;
-    }
-  }
-  if (landed && !anim) resolveMatches(); // 落ちて着地した結果での再マッチ＝チェイン
-
-  // 足元のサイコロが沈み/落下中なら追従。段数が減れば1段下／床へ落ちる
+  // 足元のサイコロが沈み/予約中なら追従。段数が減れば1段下／床へ落ちる
   if (!anim) {
     const fd = topDie(player.gx, player.gz);
-    if (fd && (fd.sinking || fd.falling)) {
+    if (fd && (fd.sinking || fd.reserved)) {
       player.h = height(player.gx, player.gz);
-      player.mesh.position.y = fd.mesh.position.y + HALF; // 沈む/落ちるサイコロの上面に追従
+      player.mesh.position.y = fd.mesh.position.y + HALF; // 沈む/予約サイコロの上面に追従
     } else if (player.h !== height(player.gx, player.gz)) {
       player.h = height(player.gx, player.gz);
       placeDevil();
@@ -1209,7 +1209,6 @@ function buildGui() {
   fFx.add(CONFIG, "particleCount", 0, 60, 1).name("パーティクル数");
   fFx.add(CONFIG, "particleSpeed", 0, 10, 0.1).name("パーティクル初速");
   fFx.add(CONFIG, "gravity", 0, 40, 0.5).name("重力(粒子)");
-  fFx.add(CONFIG, "fallGravity", 0, 60, 1).name("落下重力(サイコロ)");
   fFx.add(CONFIG, "sfxVolume", 0, 0.4, 0.005).name("効果音量");
 
   const io = {
