@@ -942,13 +942,25 @@ function tick(now: number) {
         player.mesh.position.set(c.x, c.y + HALF, c.z);
       }
     } else if (anim.type === "dieSlide") {
-      // 押されるサイコロは平行移動（着地段の高さへ向けて y も補間）
       const toY = dieWorldY(height(anim.nx!, anim.nz!));
-      anim.die!.mesh.position.set(
-        lerp(anim.from!.x, anim.to!.x, t),
-        lerp(anim.fromY!, toY, t),
-        lerp(anim.from!.z, anim.to!.z, t)
-      );
+      const willDrop = anim.fromY! > toY + 1e-6;
+      if (willDrop) {
+        // L字: まず水平に隣マスへ → そのマスで真下に落下（床にめり込まない）
+        const moveT = Math.min(1, t / 0.6);
+        const dropT = Math.max(0, (t - 0.6) / 0.4);
+        anim.die!.mesh.position.set(
+          lerp(anim.from!.x, anim.to!.x, moveT),
+          lerp(anim.fromY!, toY, dropT),
+          lerp(anim.from!.z, anim.to!.z, moveT)
+        );
+      } else {
+        // 同じ高さ → そのまま平行移動
+        anim.die!.mesh.position.set(
+          lerp(anim.from!.x, anim.to!.x, t),
+          anim.fromY!,
+          lerp(anim.from!.z, anim.to!.z, t)
+        );
+      }
       player.mesh.position.set(
         lerp(anim.pFrom!.x, anim.pTo!.x, t),
         (anim.pH ?? 0) * CELL,
