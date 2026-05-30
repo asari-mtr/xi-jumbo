@@ -30,6 +30,7 @@ const CONFIG = {
   gravity: 7, // パーティクルにかかる重力
   fallGravity: 22, // 土台が消えて落ちるサイコロの重力
   sfxVolume: 0.04, // 効果音の音量
+  showLog: true, // 操作・消滅ログを画面に表示（デバッグ用）
 };
 
 // ===== 構造定数（固定） ==========================================
@@ -73,6 +74,7 @@ interface Die {
   gz: number;
   orient: Orient;
   sinking?: { t: number; level: number; duration: number }; // 沈み中。t<sinkPlayable は足場（触れる）。level=開始時の段。duration=この目の消滅時間
+  reserved?: boolean; // 下段に乗って一緒に沈む上段（半分で重力落下に切り替わる）
   falling?: { toY: number; vy: number }; // 土台が消えて重力落下中（toY=着地 y、vy=落下速度）
 }
 type Anim = {
@@ -580,6 +582,7 @@ function startDieRoll(die: Die, dir: Dir, nx: number, nz: number, carry: boolean
   };
   popDie(die.gx, die.gz); // 最上段を抜く（土台は残る）
   sfx(180, 0.06, "square", 0.03);
+  logMsg(`転がし 目${die.orient.top}→(${nx},${nz})`);
 }
 
 function startDieSlide(die: Die, _dir: Dir, nx: number, nz: number) {
@@ -599,6 +602,7 @@ function startDieSlide(die: Die, _dir: Dir, nx: number, nz: number) {
   };
   popDie(die.gx, die.gz);
   sfx(140, 0.08, "sawtooth", 0.025);
+  logMsg(`押し 目${die.orient.top}→(${nx},${nz})`);
 }
 
 // アクイ単体の移動（乗り移り / 床歩き）。h = 着地後の段数
@@ -612,6 +616,7 @@ function startPlayerMove(nx: number, nz: number, h: number) {
     t: 0,
     ms: CONFIG.moveMs,
   };
+  logMsg(`${h >= 1 ? "乗り移り" : "歩き"}→(${nx},${nz}) 段${h}`);
 }
 
 // ===== リフト（持ち上げ / 設置） ================================
@@ -626,6 +631,7 @@ function handleLift() {
     player.carrying = null;
     ghost.visible = false;
     sfx(220, 0.09, "square", 0.04);
+    logMsg(`設置 目${die.orient.top}→(${t.gx},${t.gz})`);
     chain = 0;
     resolveMatches();
   } else {
@@ -648,6 +654,7 @@ function handleLift() {
     die.mesh.scale.set(1, 1, 1);
     player.carrying = die;
     sfx(360, 0.09, "square", 0.04, 540);
+    logMsg(`持上げ 目${die.orient.top} (${tx},${tz})`);
   }
 }
 
@@ -673,6 +680,7 @@ function tryJump() {
   };
   if (jd) popDie(player.gx, player.gz); // 跳んでいる間は元マスから外す
   sfx(320, 0.2, "sine", 0.05, 200);
+  logMsg(jd ? `ジャンプ↑ 目${jd.orient.top}` : "ジャンプ↑");
 }
 
 // ===== アニメ完了 ===============================================
@@ -763,7 +771,7 @@ function resolveMatches() {
 
     // 同じ段（レベル）のサイコロ同士で連結。下段が消えると上が落ちて別レベルで再判定＝チェイン
     for (const die of dice) {
-      if (visited.has(die) || die.sinking || die.falling) continue;
+      if (visited.has(die) || die.sinking || die.falling || die.reserved) continue;
       const L = dieLevel(die); // この連結のレベル
       const value = die.orient.top;
       const group: Die[] = [];
@@ -778,7 +786,7 @@ function resolveMatches() {
           const az = cur.gz + d.dz;
           if (!inBounds(ax, az)) continue;
           const nb = cells[ax][az][L]; // 隣マスの「同じ段」のサイコロ
-          if (nb && !visited.has(nb) && !nb.falling && nb.orient.top === value) {
+          if (nb && !visited.has(nb) && !nb.falling && !nb.reserved && nb.orient.top === value) {
             visited.add(nb);
             stack.push(nb);
           }
@@ -792,7 +800,12 @@ function resolveMatches() {
 
     if (toRemove.size) {
       const ones = dice.filter(
-        (d) => !d.sinking && !d.falling && d.orient.top === 1 && topDie(d.gx, d.gz) === d
+        (d) =>
+          !d.sinking &&
+          !d.falling &&
+          !d.reserved &&
+          d.orient.top === 1 &&
+          topDie(d.gx, d.gz) === d
       );
       const touches = ones.some((one) =>
         Object.values(DIRS).some((d) => {
@@ -823,6 +836,7 @@ function resolveMatches() {
       link = Math.max(1, links); // このパスの同時消し数
       // スコア = 消した数 × 10 × 連鎖倍率 × 同時消し（リンク）倍率
       score += toRemove.size * 10 * chain * link;
+      logMsg(`消滅 ${toRemove.size}個 (CHAIN${chain} LINK${link})`);
       for (const die of toRemove) removeDie(die);
       if (link >= 2) {
         // リンク（同時消し）は高めの音で強調
@@ -854,6 +868,9 @@ function removeDie(die: Die) {
     duration: sinkDuration(die.orient.top),
   };
   burst(die.mesh.position, FACE_COLORS[die.orient.top].bg);
+  // 上に乗っているサイコロは下段に乗って一緒に沈み始める（半分で重力落下に切り替わる）
+  const st = cells[die.gx][die.gz];
+  for (let l = idx + 1; l < st.length; l++) st[l].reserved = true;
 }
 
 // 消滅エフェクト: 中央フラッシュ + 飛び散るパーティクル
@@ -932,6 +949,16 @@ const $count = document.getElementById("count")!;
 const $chain = document.getElementById("chain")!;
 const $link = document.getElementById("link")!;
 const $message = document.getElementById("message")!;
+const $log = document.getElementById("log")!;
+
+// 操作・消滅ログ（直近のみ表示）
+const logLines: string[] = [];
+function logMsg(msg: string) {
+  if (!CONFIG.showLog) return;
+  logLines.push(msg);
+  if (logLines.length > 14) logLines.shift();
+  $log.textContent = logLines.join("\n");
+}
 
 function updateHud() {
   $score.textContent = String(score);
@@ -1068,15 +1095,22 @@ function tick(now: number) {
     die.sinking.t = Math.min(1, die.sinking.t + dt / die.sinking.duration);
     const t = die.sinking.t;
     die.mesh.position.y = dieWorldY(die.sinking.level) - t * CELL * CONFIG.sinkDepth;
-    // 半分沈んだら当たり判定を失う：cells から除去 → 上のサイコロが落下開始
-    if (t >= CONFIG.sinkPlayable) {
-      const st = cells[die.gx][die.gz];
-      const idx = st.indexOf(die);
-      if (idx >= 0) {
-        st.splice(idx, 1);
-        for (let l = idx; l < st.length; l++) {
-          if (!st[l].falling) st[l].falling = { toY: dieWorldY(l), vy: 0 };
+    const st = cells[die.gx][die.gz];
+    const myIdx = st.indexOf(die);
+    // 上に乗った reserved サイコロは下段に乗って一緒に沈む（半分まで）
+    if (myIdx >= 0) {
+      for (let l = myIdx + 1; l < st.length; l++) {
+        if (st[l].reserved) {
+          st[l].mesh.position.y = die.mesh.position.y + (l - myIdx) * CELL;
         }
+      }
+    }
+    // 半分沈んだら当たり判定を失う：cells除去 → 上段は reserved を解除して重力落下へ
+    if (t >= CONFIG.sinkPlayable && myIdx >= 0) {
+      st.splice(myIdx, 1);
+      for (let l = myIdx; l < st.length; l++) {
+        st[l].reserved = false;
+        if (!st[l].falling) st[l].falling = { toY: dieWorldY(l), vy: 0 };
       }
     }
     // 完全に沈みきったら除去
@@ -1097,6 +1131,7 @@ function tick(now: number) {
       die.mesh.position.y = die.falling.toY;
       die.falling = undefined;
       landed = true;
+      logMsg(`落下着地 目${die.orient.top}→(${die.gx},${die.gz})`);
       // 押しつぶし: 着地マスにまだ沈みアニメ中(cells外)のサイコロが残っていたら即消す
       for (let j = dice.length - 1; j >= 0; j--) {
         const o = dice[j];
@@ -1109,6 +1144,7 @@ function tick(now: number) {
         ) {
           scene.remove(o.mesh);
           dice.splice(j, 1);
+          logMsg(`押しつぶし (${o.gx},${o.gz})`);
         }
       }
     }
@@ -1118,7 +1154,7 @@ function tick(now: number) {
   // 足元のサイコロが沈み/落下中なら追従。段数が減れば1段下／床へ落ちる
   if (!anim) {
     const fd = topDie(player.gx, player.gz);
-    if (fd && (fd.sinking || fd.falling)) {
+    if (fd && (fd.sinking || fd.falling || fd.reserved)) {
       player.h = height(player.gx, player.gz);
       player.mesh.position.y = fd.mesh.position.y + HALF; // 沈む/落ちるサイコロの上面に追従
     } else if (player.h !== height(player.gx, player.gz)) {
@@ -1199,6 +1235,12 @@ function buildGui() {
   const fBoard = gui.addFolder("Board / Difficulty（Restart で反映）");
   fBoard.add(CONFIG, "grid", 3, 12, 1).name("盤面サイズ").onFinishChange(restart);
   fBoard.add(CONFIG, "startDice", 0, 40, 1).name("開始ダイス数").onFinishChange(restart);
+  fBoard.add(CONFIG, "showLog").name("ログ表示").onChange((v: boolean) => {
+    if (!v) {
+      logLines.length = 0;
+      $log.textContent = "";
+    }
+  });
 
   const fTime = gui.addFolder("Timing (ms)");
   fTime.add(CONFIG, "rollMs", 30, 1200, 10).name("転がし");

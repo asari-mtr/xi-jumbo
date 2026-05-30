@@ -92,6 +92,25 @@ canvas {
   text-shadow: 0 4px 20px rgba(0, 0, 0, 0.6);
 }
 
+#log {
+  position: fixed;
+  right: 12px;
+  bottom: 12px;
+  max-width: 340px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.55;
+  color: #9fe8c0;
+  background: rgba(8, 10, 16, 0.6);
+  padding: 8px 12px;
+  border-radius: 8px;
+  white-space: pre;
+  text-align: right;
+  z-index: 10;
+  pointer-events: none;
+  backdrop-filter: blur(4px);
+}
+
 .hidden {
   display: none !important;
 }
