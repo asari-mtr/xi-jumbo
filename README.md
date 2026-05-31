@@ -2,6 +2,8 @@
 
 PlayStation の名作アクションパズル **XI [sai]** のコアメカニクスを、Three.js + TypeScript で簡易再現したものです。
 
+> 詳細な挙動仕様（サイコロの状態遷移、combo/chain 条件、ジャンプ、2段の仕様など）は **[docs/spec.md](docs/spec.md)** を参照。
+
 ## セットアップ / 起動
 
 ```sh
