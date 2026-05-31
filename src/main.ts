@@ -807,9 +807,9 @@ function resolveMatches() {
           }
         }
       }
-      // 個数判定は「実体（消えていない）サイコロ」だけで数える（消えかけは水増ししない）
-      const realCount = group.reduce((n, g) => (g.sinking ? n : n + 1), 0);
-      if (value >= 2 && realCount >= value) {
+      // 個数判定は cells に居る連結数（＝足場がある沈みかけは含む）。
+      // 当たり判定を失った/消えたサイコロは cells に無いので連結されず、数にも入らない
+      if (value >= 2 && group.length >= value) {
         links++; // 同時に成立したグループを1つカウント
         for (const g of group) if (!g.sinking) toRemove.add(g);
       }
