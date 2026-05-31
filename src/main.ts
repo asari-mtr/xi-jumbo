@@ -783,6 +783,15 @@ function resolveMatches() {
     const toRemove = new Set<Die>();
     let links = 0; // このパスで同時に成立した独立グループ数
 
+    // 見えている間(t<1)はチェーン連結の対象。足場を失った幽霊(cells外の沈みかけ)も同じ段なら含める
+    // （完全消滅 t≥1 は dice から除去済みなので自然に対象外）
+    const ghosts = new Map<string, Die>();
+    for (const d of dice) {
+      if (d.sinking && !d.falling && !d.reserved) {
+        ghosts.set(`${d.gx},${d.gz},${d.sinking.level}`, d);
+      }
+    }
+
     // 同じ段（レベル）のサイコロ同士で連結。下段が消えると上が落ちて別レベルで再判定＝チェイン
     for (const die of dice) {
       if (visited.has(die) || die.sinking || die.falling || die.reserved) continue;
@@ -799,8 +808,8 @@ function resolveMatches() {
           const ax = cur.gx + d.dx;
           const az = cur.gz + d.dz;
           if (!inBounds(ax, az)) continue;
-          // 隣マスの「同じ段」のサイコロ（cells 内。沈みかけ t<0.5 も橋渡しに含む）
-          const nb = cells[ax][az][L];
+          // 隣マスの「同じ段」のサイコロ。cells外でも見えてる沈みかけ(幽霊)なら連結＝チェイン
+          const nb = cells[ax][az][L] ?? ghosts.get(`${ax},${az},${L}`);
           if (nb && !visited.has(nb) && !nb.falling && !nb.reserved && nb.orient.top === value) {
             visited.add(nb);
             stack.push(nb);
