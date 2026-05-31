@@ -92,10 +92,33 @@ canvas {
   text-shadow: 0 4px 20px rgba(0, 0, 0, 0.6);
 }
 
-#log {
+#logbox {
   position: fixed;
   right: 12px;
   bottom: 12px;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+#copyLog {
+  pointer-events: auto;
+  cursor: pointer;
+  font-size: 11px;
+  color: #cfeaff;
+  background: rgba(16, 20, 30, 0.85);
+  border: 1px solid #3a4a6a;
+  border-radius: 6px;
+  padding: 4px 12px;
+}
+
+#copyLog:active {
+  background: #2a3346;
+}
+
+#log {
   max-width: 340px;
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
   font-size: 11px;
@@ -106,7 +129,6 @@ canvas {
   border-radius: 8px;
   white-space: pre;
   text-align: right;
-  z-index: 10;
   pointer-events: auto;
   user-select: text;
   -webkit-user-select: text;

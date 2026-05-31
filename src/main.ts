@@ -783,14 +783,6 @@ function resolveMatches() {
     const toRemove = new Set<Die>();
     let links = 0; // このパスで同時に成立した独立グループ数
 
-    // 沈みかけ（消えかけ・cells外）も同じ段なら連結対象にする＝「沈みかけに隣接で消す」チェイン
-    const ghosts = new Map<string, Die>();
-    for (const d of dice) {
-      if (d.sinking && !d.falling) {
-        ghosts.set(`${d.gx},${d.gz},${d.sinking.level}`, d);
-      }
-    }
-
     // 同じ段（レベル）のサイコロ同士で連結。下段が消えると上が落ちて別レベルで再判定＝チェイン
     for (const die of dice) {
       if (visited.has(die) || die.sinking || die.falling || die.reserved) continue;
@@ -807,15 +799,17 @@ function resolveMatches() {
           const ax = cur.gx + d.dx;
           const az = cur.gz + d.dz;
           if (!inBounds(ax, az)) continue;
-          // 隣マスの「同じ段」のサイコロ（cells外でも沈みかけ＝幽霊なら連結＝チェイン）
-          const nb = cells[ax][az][L] ?? ghosts.get(`${ax},${az},${L}`);
+          // 隣マスの「同じ段」のサイコロ（cells 内。沈みかけ t<0.5 も橋渡しに含む）
+          const nb = cells[ax][az][L];
           if (nb && !visited.has(nb) && !nb.falling && !nb.reserved && nb.orient.top === value) {
             visited.add(nb);
             stack.push(nb);
           }
         }
       }
-      if (value >= 2 && group.length >= value) {
+      // 個数判定は「実体（消えていない）サイコロ」だけで数える（消えかけは水増ししない）
+      const realCount = group.reduce((n, g) => (g.sinking ? n : n + 1), 0);
+      if (value >= 2 && realCount >= value) {
         links++; // 同時に成立したグループを1つカウント
         for (const g of group) if (!g.sinking) toRemove.add(g);
       }
@@ -992,6 +986,16 @@ function logMsg(msg: string) {
   $log.textContent = logLines.join("\n");
   console.log("[XI] " + msg);
 }
+
+document.getElementById("copyLog")?.addEventListener("click", () => {
+  const text = logAll.join("\n");
+  if (navigator.clipboard?.writeText) {
+    void navigator.clipboard.writeText(text);
+    logMsg("(ログをコピーしました)");
+  } else {
+    window.prompt("ログをコピーしてください", text);
+  }
+});
 
 function updateHud() {
   $score.textContent = String(score);
